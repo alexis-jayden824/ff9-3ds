@@ -19,6 +19,13 @@ IMG_SHA1 = {
     3: '4e4dab50e33f5a78bb1d02894e450e3facb56976',
     4: '0b98b41549b5539670d957ad3579f0b677ee87f9',
 }
+# Later NTSC-U printings (Redump's "(Rev 1)"): the same executable, an FF9.IMG with other data. Pinned here once known
+# ({disc: sha1}); until then such a disc is accepted when FF9.IMG's code overlays (directory 0) are the NTSC-U
+# release's, file for file: the port is compiled from that code, the rest of FF9.IMG is data it reads at run time
+# through the archive's own file tables. relocs.py checks disc 1's overlays and effect modules again, strictly.
+IMG_SHA1_OTHER = {
+    'Rev 1': {},
+}
 REGION_OF_PREFIX = {'SLES': 'the European (PAL) release', 'SLPS': 'the Japanese release',
                     'SCES': 'a European release', 'SCUS': 'a different NTSC-U title', 'SLPM': 'a Japanese release'}
 
@@ -162,18 +169,73 @@ class Disc:
                 progress(done, size)
         return h.hexdigest()
 
-    def verify(self, progress=None):
-        """Check the executable and FF9.IMG against the NTSC-U release's (DiscError if not)"""
+    def verify(self, progress=None, ovl_sha1=None):
+        """Check the executable and FF9.IMG against the NTSC-U release's (DiscError if not). Sets self.revision ('Rev 0'
+        for the reference release) and self.note (None, or a line for the log about a non-reference FF9.IMG).
+        ovl_sha1: {'ovl_XX.bin': sha1} (the decomp's checksums.ovl.us.sha1), to accept another revision's FF9.IMG"""
         name = os.path.basename(self.path)
         ents = self.entries()
+        self.revision, self.note = None, None
         if self.file_sha1(self.boot.upper().split(';')[0]) != EXE_SHA1:
             raise DiscError(f'{name}: the executable {self.boot} differs from the NTSC-U release\'s (a modified or '
                             f'damaged dump?)')
         if 'FF9.IMG' not in ents:
             raise DiscError(f'{name}: no FF9.IMG')
-        if self.file_sha1('FF9.IMG', progress) != IMG_SHA1[self.number]:
+        sha = self.file_sha1('FF9.IMG', progress)
+        self.img_sha1 = sha
+        if sha == IMG_SHA1[self.number]:
+            self.revision = 'Rev 0'
+            return
+        for rev, hashes in IMG_SHA1_OTHER.items():
+            if hashes.get(self.number) == sha:
+                self.revision = rev
+                self.note = f'disc {self.number}: FF9.IMG is the NTSC-U {rev} printing\'s'
+                return
+        if not ovl_sha1:
             raise DiscError(f'{name}: disc {self.number}\'s FF9.IMG differs from the NTSC-U release\'s (a damaged dump '
                             f'or a patched/translated disc?)')
+        self._check_code(ovl_sha1)
+        self.revision = 'other'
+        self.note = (f'disc {self.number}: FF9.IMG is not the original NTSC-U release\'s (a later printing such as Rev 1?)'
+                     f' but its code overlays are, file for file. FF9.IMG sha1 {sha}')
+
+    def _ff9img_overlays(self):
+        """{file id: bytes} of FF9.IMG's directory 0 (the code overlays; layout: the decomp's tools/ff9img.py)"""
+        f = self.file_view('FF9.IMG')
+        f.seek(0)
+        hdr = f.read(USER)
+        magic, _, ndirs, _ = struct.unpack_from('<4s3I', hdr)
+        if magic != b'FF9 ' or ndirs < 1:
+            raise DiscError(f'{os.path.basename(self.path)}: FF9.IMG has no FF9 archive header (a damaged dump?)')
+        kind, count = struct.unpack_from('<2I', hdr, 16)
+        if kind != 2 or not 0 < count < 4096:
+            raise DiscError(f'{os.path.basename(self.path)}: FF9.IMG\'s first directory isn\'t a file table')
+        f.seek(USER)  # dir 0's table: from sector 1
+        raw = f.read((count + 1) * 8)
+        ents = [struct.unpack_from('<2I', raw, k * 8) for k in range(count + 1)]
+        out = {}
+        for k in range(count):
+            fid, sec = ents[k]
+            f.seek(sec * USER)
+            out[fid] = f.read((ents[k + 1][1] - sec) * USER)
+        return out
+
+    def _check_code(self, ovl_sha1):
+        name = os.path.basename(self.path)
+        compared = 0
+        for fid, data in self._ff9img_overlays().items():
+            want = ovl_sha1.get(f'ovl_{fid:02x}.bin')
+            if want is None:
+                continue
+            if hashlib.sha1(data).hexdigest() != want:
+                raise DiscError(f'{name}: disc {self.number}\'s FF9.IMG differs from the NTSC-U release\'s, and so does '
+                                f'its game code (overlay {fid:02x}): this port is compiled from the original release\'s '
+                                f'code and can\'t run this disc (a damaged dump, a patched/translated disc, or a '
+                                f'revision with changed code)')
+            compared += 1
+        if not compared:
+            raise DiscError(f'{name}: disc {self.number}\'s FF9.IMG differs from the NTSC-U release\'s and holds none of '
+                            f'its code overlays (a damaged dump?)')
 
     def file_view(self, name):
         """A read-only file object over one of the disc's files (its user data, sector by sector)"""

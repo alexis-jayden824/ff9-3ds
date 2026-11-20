@@ -106,11 +106,17 @@ def build(discs, out_dir, make_3dsx=True, make_cia=True, log=print, report=lambd
         pr.step('verify', 'Checking the discs')
         sizes = {n: os.path.getsize(discs[n].path) for n in discs}
         done = 0
+        ovl_sha1 = relocs._sha1_lines(os.path.join(vendor_dir(), 'decomp', 'config', 'checksums.ovl.us.sha1'))
         for n in sorted(discs):
             log(f'Checking disc {n} ({os.path.basename(discs[n].path)})')
-            discs[n].verify(lambda d, t, base=done: pr.part(base + d, sum(sizes.values())))
+            discs[n].verify(lambda d, t, base=done: pr.part(base + d, sum(sizes.values())), ovl_sha1=ovl_sha1)
+            if discs[n].note:
+                log(discs[n].note)
             done += sizes[n]
-        log('All four discs are Final Fantasy IX (NTSC-U), unmodified.')
+        if all(discs[n].revision == 'Rev 0' for n in discs):
+            log('All four discs are Final Fantasy IX (NTSC-U), unmodified.')
+        else:
+            log('All four discs are Final Fantasy IX (NTSC-U) with the original release\'s game code.')
 
         pr.step('relocs', 'Analysing the executable')
         rel_path = os.path.join(work, 'psxrel.bin')
