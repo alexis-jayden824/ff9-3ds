@@ -110,7 +110,7 @@ jobs:
   pages:
     name: Publish the web builder
     # from master (the github-pages environment's deployment rule): the page follows master, the executables the tags
-    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    if: github.repository == 'maurizi/ff9-3ds' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
     needs: web
     runs-on: ubuntu-latest
     permissions:
